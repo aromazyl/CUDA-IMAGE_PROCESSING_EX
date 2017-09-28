@@ -15,6 +15,20 @@ void DumpCudaMemInfo(T* src, int size, const char* tag) {
   free(dest);
 }
 
+template <typename T>
+void DumpCudaMatrix(T* src, int height, int width) {
+  T* dest;
+  dest = (T*)malloc(sizeof(T) * height * width);
+  checkCudaErrors(cudaMemcpy(dest, src, sizeof(T) * height * width, cudaMemcpyDeviceToHost));
+  for (int i = 0; i < height; ++i) {
+    for (int j = 0; j < width; ++j) {
+      printf("%d,", (int)dest[j + i * width]);
+    }
+    std::cout << std::endl;
+  }
+  free(dest);
+}
+
 void DumpUchar4(uchar4* src, int size, const char* tag) {
   uchar4* dest;
   dest = (uchar4*)calloc(sizeof(uchar4), size);
@@ -39,10 +53,10 @@ struct PossionBlendingTest {
   void SetUp() {
     for (int i = 0; i < 100; ++i) {
       for (int j = 0; j < 100; ++j) {
-        h_sourceImg[i][j].x = 255;
-        h_sourceImg[i][j].y = 255;
-        h_sourceImg[i][j].z = 255;
-        h_sourceImg[i][j].w = 255;
+        h_sourceImg[i][j].x = j + i * 100;
+        h_sourceImg[i][j].y = j + i * 100;
+        h_sourceImg[i][j].z = j + i * 100;
+        h_sourceImg[i][j].w = j + i * 100;
         h_destImg[i][j].x = i + j * 100;
         h_destImg[i][j].y = i + j * 100;
         h_destImg[i][j].z = i + j * 100;
@@ -76,11 +90,70 @@ struct PossionBlendingTest {
   dim3 mblockDim;
 };
 
+#define TEST_WARPER(func) \
+  void gtest_##func() { \
+    PossionBlendingTest tester; \
+    tester.SetUp(); \
+    func(tester); \
+    tester.TearDown(); \
+  } \
+
+void compute_mask_kernel_test(PossionBlendingTest& tester) {
+  uchar4 n1_ = make_uchar4(255, 255, 255, 255);
+  uchar4 n0_ = make_uchar4(250, 250, 250, 250);
+  uchar4 h_sourceImg[10][10] = {
+    n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,
+    n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,
+    n1_,n1_,n0_,n0_,n0_,n0_,n0_,n1_,n1_,n1_,
+    n1_,n0_,n0_,n0_,n0_,n0_,n0_,n0_,n0_,n1_,
+    n1_,n0_,n0_,n0_,n0_,n0_,n0_,n0_,n0_,n1_,
+    n1_,n0_,n0_,n0_,n0_,n0_,n0_,n0_,n0_,n1_,
+    n1_,n1_,n0_,n0_,n0_,n0_,n0_,n0_,n0_,n1_,
+    n1_,n1_,n1_,n0_,n0_,n0_,n0_,n1_,n1_,n1_,
+    n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,
+    n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_,n1_
+  };
+
+  uchar4* d_sourceImg;
+  checkCudaErrors(cudaMalloc(&d_sourceImg, 100 * sizeof(uchar4)));
+  checkCudaErrors(cudaMemcpy(d_sourceImg, h_sourceImg, 100 * sizeof(uchar4), cudaMemcpyHostToDevice));
+
+  compute_masks_kernel<<<dim3(3, 3, 1), dim3(32, 32, 1)>>>(d_sourceImg, 10, 10, tester.d_mask);
+  DumpCudaMatrix<char>(tester.d_mask, 10, 10);
+  checkCudaErrors(cudaFree(d_sourceImg));
+
+}
+
+void ComputeSum2Kernel_test(PossionBlendingTest& tester) {
+  uchar4* sum2;
+  checkCudaErrors(cudaMalloc(&sum2, sizeof(uchar4) * 10000));
+  ComputeSum2Kernel<<<tester.mgridDim, tester.mblockDim>>>(tester.d_sourceImg, sum2, 100, 100);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  DumpUchar4(sum2, 10000, "sum2");
+  checkCudaErrors(cudaFree(sum2));
+}
+
+void JacobiKernel_test(PossionBlendingTest& tester) {
+}
+
+void InitBuffer_test(PossionBlendingTest& tester) {
+}
+
+void CopyResult_test(PossionBlendingTest& tester) {
+}
+
+void TestBlend(int argc, char** argv) {
+  char* sourceImg = argv[1];
+  char* destImg = argv[2];
+}
+
+TEST_WARPER(compute_mask_kernel_test);
+TEST_WARPER(ComputeSum2Kernel_test);
+TEST_WARPER(JacobiKernel_test);
+TEST_WARPER(InitBuffer_test);
+TEST_WARPER(CopyResult_test);
+
 int main() {
-  PossionBlendingTest tester;
-  tester.SetUp();
-  compute_masks_kernel<<<tester.mgridDim, tester.mblockDim>>>(tester.d_sourceImg, 100, 100, tester.d_mask);
-  DumpCudaMemInfo<char>(tester.d_mask, 10000, "mask");
-  DumpUchar4(tester.d_sourceImg, 10000, "sourceImg");
-  tester.TearDown();
+  gtest_compute_mask_kernel_test();
+  return 0;
 }
