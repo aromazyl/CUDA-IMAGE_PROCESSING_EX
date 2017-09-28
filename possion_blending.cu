@@ -68,10 +68,8 @@
 #include <thrust/host_vector.h>
 
 __global__ void compute_masks_kernel(const uchar4* d_sourceImg,
-    int numRows, int numCols, const int* d_destImg, char* d_mask) {
-  int xtid = threadIdx.x;
+    int numRows, int numCols, char* d_mask) {
   int xmid = threadIdx.x + blockIdx.x * blockDim.x;
-  int ytid = threadIdx.y;
   int ymid = threadIdx.y + blockIdx.y * blockDim.y;
   if (xmid >= numRows || ymid >= numCols) return;
   uchar4 pixel_val = d_sourceImg[xmid + ymid * numCols];
@@ -80,10 +78,10 @@ __global__ void compute_masks_kernel(const uchar4* d_sourceImg,
   else k = 1;
   d_mask[xmid + ymid * numCols] = k;
   __syncthreads();
-  unsigned int pixel_up = 255;
-  unsigned int pixel_dw = 255;
-  unsigned int pixel_lf = 255;
-  unsigned int pixel_rt = 255;
+  uchar4 pixel_up = make_uchar4(255, 255, 255, 255);
+  uchar4 pixel_dw = make_uchar4(255, 255, 255, 255);
+  uchar4 pixel_lf = make_uchar4(255, 255, 255, 255);
+  uchar4 pixel_rt = make_uchar4(255, 255, 255, 255);
 
   if (ymid > 0) {
     pixel_up = d_sourceImg[xmid + (ymid-1)*numCols];
@@ -98,13 +96,16 @@ __global__ void compute_masks_kernel(const uchar4* d_sourceImg,
     pixel_rt = d_sourceImg[xmid + 1 + ymid*numCols];
   }
 
-  if (((pixel_up & pixel_dw & pixel_l & pixel_rt) & 0xFFFFFF)
-      != 0xFFFFFF) {
+  if ((((pixel_up.x & pixel_dw.x & pixel_lf.x & pixel_rt.x)
+      != 0xF)) || ((pixel_up.y & pixel_dw.y & pixel_lf.y & pixel_rt.y)
+      != 0xF) || ((pixel_up.z & pixel_dw.z & pixel_lf.z & pixel_rt.z)
+      != 0xF)) {
     if (d_mask[xmid + ymid * numCols] == 0) {
       d_mask[xmid + ymid * numCols] = 2;
     }
   }
 }
+
 /*
 
 __global__ void separate_kernel(
@@ -128,25 +129,32 @@ __global__ void separate_kernel(
 */
 
 __global__ void ComputeSum2Kernel(const char* d_mask,
-    const uchar4* d_sourceImg, uchar4* t_sum2) {
-  int xtid = threadIdx.x;
-  int ytid = threadIdx.y;
+    const uchar4* d_sourceImg, uchar4* t_sum2,
+    size_t numCols, size_t numRows) {
   int xmid = threadIdx.x + blockIdx.x * blockDim.x;
   int ymid = threadIdx.y + blockIdx.y * blockDim.y;
   if (xmid >= numCols || ymid >= numRows) return;
   uchar4 sum2;
   uchar4 val = d_sourceImg[xmid + ymid * numCols];
   if (ymid > 0) {
-    sum2 = val - d_sourceImg[xmid + (ymid - 1) * numCols];
+    sum2.x = val.x - d_sourceImg[xmid + (ymid - 1) * numCols].x;
+    sum2.y = val.y - d_sourceImg[xmid + (ymid - 1) * numCols].y;
+    sum2.z = val.z - d_sourceImg[xmid + (ymid - 1) * numCols].z;
   }
   if (ymid < numRows - 1) {
-    sum2 += val - d_sourceImg[xmid + (ymid + 1) * numCols];
+    sum2.x += val.x - d_sourceImg[xmid + (ymid + 1) * numCols].x;
+    sum2.y += val.y - d_sourceImg[xmid + (ymid + 1) * numCols].y;
+    sum2.z += val.z - d_sourceImg[xmid + (ymid + 1) * numCols].z;
   }
   if (xmid > 0) {
-    sum2 += val - d_sourceImg[xmid - 1 + ymid * numCols];
+    sum2.x += val.x - d_sourceImg[xmid - 1 + ymid * numCols].x;
+    sum2.y += val.y - d_sourceImg[xmid - 1 + ymid * numCols].y;
+    sum2.z += val.z - d_sourceImg[xmid - 1 + ymid * numCols].z;
   }
   if (xmid < numCols - 1) {
-    sum2 += val - d_sourceImg[xmid + 1 + ymid * numCols];
+    sum2.x += val.x - d_sourceImg[xmid + 1 + ymid * numCols].x;
+    sum2.y += val.y - d_sourceImg[xmid + 1 + ymid * numCols].y;
+    sum2.z += val.z - d_sourceImg[xmid + 1 + ymid * numCols].z;
   }
   t_sum2[xmid + ymid * numCols] = sum2;
 }
@@ -156,15 +164,14 @@ __global__ void JacobiKernel(
     const uchar4* sum2,
     const uchar4* bufferA, uchar4* bufferB,
     int numCols, int numRows) {
-  int xtid = threadIdx.x;
-  int ytid = threadIdx.y;
   int xmid = threadIdx.x + blockIdx.x * blockDim.x;
   int ymid = threadIdx.y + blockIdx.y * blockDim.y;
   if (xmid >= numCols || ymid >= numRows) return;
-  int4 sum1 = 0;
+  int4 sum1 = make_int4(0,0,0,0);
   if (ymid > 0) {
-    uchar4 val = d_mask[xmid + (ymid - 1) * numCols];
-    if (val != 0) {
+    uchar4 val;
+    val.x = d_mask[xmid + (ymid - 1) * numCols];
+    if (val.x != 0) {
       val = bufferA[xmid + (ymid - 1) * numCols];
       sum1.x += val.x;
       sum1.y += val.y;
@@ -172,17 +179,19 @@ __global__ void JacobiKernel(
     }
   }
   if (ymid < numRows - 1) {
-    uchar4 val = d_mask[xmid + (ymid + 1) * numCols];
-    if (val != 0) {
-      val = bufferA[xmid + (ymid + 1)] * numCols;
+    uchar4 val;
+    val.x = d_mask[xmid + (ymid + 1) * numCols];
+    if (val.x != 0) {
+      val = bufferA[xmid + (ymid + 1) * numCols];
       sum1.x += val.x;
       sum1.y += val.y;
       sum1.z += val.z;
     }
   }
   if (xmid > 0) {
-    uchar4 val = d_mask[xmid - 1 + ymid * numCols];
-    if (val != 0) {
+    uchar4 val;
+    val.x = d_mask[xmid - 1 + ymid * numCols];
+    if (val.x != 0) {
       val = bufferA[xmid - 1 + ymid * numCols];
       sum1.x += val.x;
       sum1.y += val.y;
@@ -190,8 +199,9 @@ __global__ void JacobiKernel(
     }
   }
   if (xmid < numCols - 1) {
-    uchar4 val = d_mask[xmid + 1 + ymid * numCols];
-    if (val != 0) {
+    uchar4 val;
+    val.x = d_mask[xmid + 1 + ymid * numCols];
+    if (val.x != 0) {
       val = bufferA[xmid + 1 + ymid * numCols];
       sum1.x += val.x;
       sum1.y += val.y;
@@ -212,9 +222,7 @@ __global__ void InitBuffer(
     const uchar4* const d_sourceImg, uchar4* buffer,
     const char* d_mask, const uchar4* const d_destImg,
     size_t numRowsSource, size_t numColsSource) {
-  int xtid = threadIdx.x;
   int xmid = threadIdx.x + blockDim.x * blockIdx.x;
-  int ytid = threadIdx.y;
   int ymid = threadIdx.y + blockDim.y * blockIdx.y;
   if (xmid >= numColsSource || ymid >= numRowsSource) return;
   int pos = xmid + ymid * numColsSource;
@@ -223,23 +231,21 @@ __global__ void InitBuffer(
   } else if (d_mask[pos] == 2) {
     buffer[pos] = d_destImg[pos];
   } else {
-    buffer[pos] = 0;
+    buffer[pos] = make_uchar4(0,0,0,0);
   }
 }
 
 __global__ void CopyResult(const uchar4* buffer, const char* d_mask,
     uchar4* d_blendedImg, const uchar4* d_destImg,
     const size_t numRowsSource, const size_t numColsSource) {
-  int xtid = threadIdx.x;
   int xmid = threadIdx.x + blockDim.x * blockIdx.x;
-  int ytid = threadIdx.y;
   int ymid = threadIdx.y + blockDim.y * blockIdx.y;
   if (xmid >= numColsSource || ymid >= numRowsSource) return;
   int pos = xmid + ymid * numColsSource;
   if (d_mask[pos] == 1) {
     d_blendedImg[pos] = buffer[pos];
   } else {
-    d_blenedImg[pos] = d_destImg[pos];
+    d_blendedImg[pos] = d_destImg[pos];
   }
 }
 
@@ -250,12 +256,14 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
 {
     uchar4* d_sourceImg;
     uchar4* d_destImg;
-    uchar4* d_mask;
+    char* d_mask;
     uchar4* bufferA;
     uchar4* bufferB;
     uchar4* sum2;
+    uchar4* d_blendedImg;
 
     unsigned int image_size = numColsSource * numRowsSource;
+    checkCudaErrors(cudaMalloc(&d_blendedImg, image_size * sizeof(uchar4)));
     checkCudaErrors(cudaMalloc(&d_sourceImg, image_size * sizeof(uchar4)));
     checkCudaErrors(cudaMalloc(&d_destImg, image_size * sizeof(uchar4)));
     checkCudaErrors(cudaMalloc(&d_mask, image_size * sizeof(char)));
@@ -265,13 +273,13 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
 
     dim3 gridDim(numColsSource / 32 + 1, numRowsSource / 32 + 1);
     dim3 blockDim(32, 32);
-    checkCudaErrors(cudaMemcpy(d_sourceImg, h_sourceImg, image_size * sizeof(uchar4)));
-    checkCudaErrors(cudaMemcpy(d_destImg, h_destImg, image_size * sizeof(uchar4)));
+    checkCudaErrors(cudaMemcpy(d_sourceImg, h_sourceImg, image_size * sizeof(uchar4), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_destImg, h_destImg, image_size * sizeof(uchar4), cudaMemcpyHostToDevice));
 
-    compute_masks_kernel<<<gridDim, blockDim>>>(d_sourceImg, numRowsSource, numColsSource, d_destImg, d_mask);
+    compute_masks_kernel<<<gridDim, blockDim>>>(d_sourceImg, numRowsSource, numColsSource, d_mask);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
-    ComputeSum2Kernel<<<gridDim, blockDim>>>(d_mask, d_sourceImg, sum2);
+    ComputeSum2Kernel<<<gridDim, blockDim>>>(d_mask, d_sourceImg, sum2, numColsSource, numRowsSource);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
     InitBuffer<<<gridDim, blockDim>>>(d_sourceImg, bufferA, d_mask, d_destImg, numRowsSource, numColsSource);
@@ -283,7 +291,7 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
       } else {
         JacobiKernel<<<gridDim, blockDim>>>(d_mask, sum2, bufferA, bufferB, numColsSource, numRowsSource);
       }
-      cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastErrors());
+      cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
     }
 
     checkCudaErrors(cudaFree(bufferB));
@@ -296,7 +304,7 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
     checkCudaErrors(cudaFree(d_mask));
     checkCudaErrors(cudaFree(d_destImg));
 
-    checkCudaErrors(cudaMemcpy(h_blendedImg, d_blendedImg, sizeof(uchar4) * image_size));
+    checkCudaErrors(cudaMemcpy(h_blendedImg, d_blendedImg, sizeof(uchar4) * image_size, cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaFree(d_blendedImg));
 
   /* To Recap here are the steps you need to implement
