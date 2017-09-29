@@ -1,6 +1,6 @@
 //Udacity HW 6
 //Poisson Blending
-
+#define BLOCK_SIZE 32
 /* Background
    ==========
 
@@ -66,7 +66,6 @@ In this assignment we will do 800 iterations.
 
 #include "utils.h"
 #include <thrust/host_vector.h>
-#include "reference_calc.cpp"
 __global__ void compute_masks_kernel(const uchar4* d_sourceImg,
     int numRows, int numCols, char* d_mask) {
   int xmid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -74,10 +73,10 @@ __global__ void compute_masks_kernel(const uchar4* d_sourceImg,
   if (xmid >= numCols || ymid >= numRows) return;
   uchar4 pixel_val = d_sourceImg[xmid + ymid * numCols];
   int k = 0;
-  if (pixel_val.x == 255 && pixel_val.y == 255 && pixel_val.z == 255) { k = 0; }
+  if ((pixel_val.x + pixel_val.y + pixel_val.z) >= 3 * 255) { k = 0; }
   else k = 1;
   d_mask[xmid + ymid * numCols] = k;
-  __syncthreads();
+
   uchar4 pixel_up = make_uchar4(255, 255, 255, 255);
   uchar4 pixel_dw = make_uchar4(255, 255, 255, 255);
   uchar4 pixel_lf = make_uchar4(255, 255, 255, 255);
@@ -96,14 +95,24 @@ __global__ void compute_masks_kernel(const uchar4* d_sourceImg,
     pixel_rt = d_sourceImg[xmid + 1 + ymid*numCols];
   }
 
-  if ((((pixel_up.x & pixel_dw.x & pixel_lf.x & pixel_rt.x)
-          != 0xFF)) || ((pixel_up.y & pixel_dw.y & pixel_lf.y & pixel_rt.y)
-          != 0xFF) || ((pixel_up.z & pixel_dw.z & pixel_lf.z & pixel_rt.z)
-            != 0xFF)) {
+  if (d_mask[xmid + ymid * numCols] == 1) {
+    if ((pixel_up.x & pixel_up.y & pixel_up.z == 0xFF)
+     || (pixel_dw.x & pixel_dw.y & pixel_dw.z == 0xFF)
+     || (pixel_lf.x & pixel_lf.y & pixel_lf.z == 0xFF)
+     || (pixel_rt.x & pixel_rt.y & pixel_rt.z == 0xFF)) {
+      d_mask[xmid + ymid * numCols] = 2;
+    }
+  }
+  /*
+  if ((( pixel_up.x & pixel_dw.x & pixel_lf.x & pixel_rt.x 
+          & pixel_up.y & pixel_dw.y & pixel_lf.y & pixel_rt.y
+          & pixel_up.z & pixel_dw.z & pixel_lf.z & pixel_rt.z)
+        != 0xFF)) {
     if (d_mask[xmid + ymid * numCols] == 0) {
       d_mask[xmid + ymid * numCols] = 2;
     }
   }
+  */
 }
 
 __global__ void ComputeSum2Kernel(
@@ -114,25 +123,34 @@ __global__ void ComputeSum2Kernel(
   if (xmid >= numCols || ymid >= numRows) return;
   float4 sum2;
   uchar4 val = d_sourceImg[xmid + ymid * numCols];
+  sum2.x = 4 * val.x;
+  sum2.y = 4 * val.y;
+  sum2.z = 4 * val.z;
+  sum2.w = 0;
+  uchar4 s_val;
   if (ymid > 0) {
-    sum2.x = val.x - d_sourceImg[xmid + (ymid - 1) * numCols].x;
-    sum2.y = val.y - d_sourceImg[xmid + (ymid - 1) * numCols].y;
-    sum2.z = val.z - d_sourceImg[xmid + (ymid - 1) * numCols].z;
+    s_val = d_sourceImg[xmid + (ymid - 1) * numCols];
+    sum2.x -= s_val.x;
+    sum2.y -= s_val.y;
+    sum2.z -= s_val.z;
   }
   if (ymid < numRows - 1) {
-    sum2.x += val.x - d_sourceImg[xmid + (ymid + 1) * numCols].x;
-    sum2.y += val.y - d_sourceImg[xmid + (ymid + 1) * numCols].y;
-    sum2.z += val.z - d_sourceImg[xmid + (ymid + 1) * numCols].z;
+    s_val = d_sourceImg[xmid + (ymid + 1) * numCols];
+    sum2.x -= s_val.x;
+    sum2.y -= s_val.y;
+    sum2.z -= s_val.z;
   }
   if (xmid > 0) {
-    sum2.x += val.x - d_sourceImg[xmid - 1 + ymid * numCols].x;
-    sum2.y += val.y - d_sourceImg[xmid - 1 + ymid * numCols].y;
-    sum2.z += val.z - d_sourceImg[xmid - 1 + ymid * numCols].z;
+    s_val = d_sourceImg[xmid - 1 + ymid * numCols];
+    sum2.x -= s_val.x;
+    sum2.y -= s_val.y;
+    sum2.z -= s_val.z;
   }
   if (xmid < numCols - 1) {
-    sum2.x += val.x - d_sourceImg[xmid + 1 + ymid * numCols].x;
-    sum2.y += val.y - d_sourceImg[xmid + 1 + ymid * numCols].y;
-    sum2.z += val.z - d_sourceImg[xmid + 1 + ymid * numCols].z;
+    s_val = d_sourceImg[xmid + 1 + ymid * numCols];
+    sum2.x -= s_val.x;
+    sum2.y -= s_val.y;
+    sum2.z -= s_val.z;
   }
   t_sum2[xmid + ymid * numCols] = sum2;
 }
@@ -174,13 +192,15 @@ __global__ void JacobiKernel(
       sum1.z += val.z;
     }
     float4 newVal;
-    newVal.x = (sum1.x + sum2[xmid+ymid*numCols].x) / 4;
-    newVal.y = (sum1.y + sum2[xmid+ymid*numCols].y) / 4;
-    newVal.z = (sum1.z + sum2[xmid+ymid*numCols].z) / 4;
+    float4 sum2_val = sum2[xmid + ymid * numCols];
+    newVal.x = (sum1.x + sum2_val.x) / 4.0f;
+    newVal.y = (sum1.y + sum2_val.y) / 4.0f;
+    newVal.z = (sum1.z + sum2_val.z) / 4.0f;
 
-    bufferB[xmid + ymid * numCols].x = min(255.0f, max(0.0f, newVal.x));
-    bufferB[xmid + ymid * numCols].y = min(255.0f, max(0.0f, newVal.y));
-    bufferB[xmid + ymid * numCols].z = min(255.0f, max(0.0f, newVal.z));
+    newVal.x = min(255.0f, max(0.0f, newVal.x));
+    newVal.y = min(255.0f, max(0.0f, newVal.y));
+    newVal.z = min(255.0f, max(0.0f, newVal.z));
+    bufferB[xmid + ymid * numCols] = newVal;
   } else {
     bufferB[xmid + ymid * numCols] = bufferA[xmid + ymid * numCols];
   }
@@ -203,7 +223,7 @@ __global__ void InitBuffer(
     buffer[pos].y = d_destImg[pos].y;
     buffer[pos].z = d_destImg[pos].z;
   } else {
-    buffer[pos] = make_float4(0.0f,0.0f,0.0f,0.0f);
+    buffer[pos] = make_float4(0.f,0.f,0.f,0.0f);
   }
 }
 
@@ -218,7 +238,7 @@ __global__ void CopyResult(const float4* buffer, const char* d_mask,
     d_blendedImg[pos].x = buffer[pos].x;
     d_blendedImg[pos].y = buffer[pos].y;
     d_blendedImg[pos].z = buffer[pos].z;
-    d_blendedImg[pos].w = d_destImg[pos].w;
+    d_blendedImg[pos].w = 255;
   } else {
     d_blendedImg[pos] = d_destImg[pos];
   }
@@ -288,14 +308,14 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
   checkCudaErrors(cudaMalloc(&bufferA, image_size * sizeof(float4)));
   checkCudaErrors(cudaMalloc(&bufferB, image_size * sizeof(float4)));
   checkCudaErrors(cudaMalloc(&sum2, image_size * sizeof(float4)));
-
-  dim3 gridDim(numColsSource / 32 + 1, numRowsSource / 32 + 1);
-  dim3 blockDim(32, 32);
+  dim3 gridDim(numColsSource / BLOCK_SIZE + 1, numRowsSource / BLOCK_SIZE + 1);
+  dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
   checkCudaErrors(cudaMemcpy(d_sourceImg, h_sourceImg, image_size * sizeof(uchar4), cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMemcpy(d_destImg, h_destImg, image_size * sizeof(uchar4), cudaMemcpyHostToDevice));
 
   compute_masks_kernel<<<gridDim, blockDim>>>(d_sourceImg, numRowsSource, numColsSource, d_mask);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
 
   ComputeSum2Kernel<<<gridDim, blockDim>>>(d_sourceImg, sum2, numColsSource, numRowsSource);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
@@ -304,11 +324,8 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
   for (int turn = 0; turn < 800; ++turn) {
-    if (turn & 0x01) {
-      JacobiKernel<<<gridDim, blockDim>>>(d_mask, sum2, bufferB, bufferA, numColsSource, numRowsSource);
-    } else {
-      JacobiKernel<<<gridDim, blockDim>>>(d_mask, sum2, bufferA, bufferB, numColsSource, numRowsSource);
-    }
+    JacobiKernel<<<gridDim, blockDim>>>(d_mask, sum2, bufferA, bufferB, numColsSource, numRowsSource);
+    std::swap(bufferA, bufferB);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
   }
 
@@ -323,6 +340,7 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
   checkCudaErrors(cudaFree(d_destImg));
 
   checkCudaErrors(cudaMemcpy(h_blendedImg, d_blendedImg, sizeof(uchar4) * image_size, cudaMemcpyDeviceToHost));
+  // checkCudaErrors(cudaMemcpy(h_blendedImg, d_sourceImg, sizeof(uchar4) * image_size, cudaMemcpyDeviceToHost));
   checkCudaErrors(cudaFree(d_blendedImg));
   /*
      uchar4* h_reference = new uchar4[srcSize];
